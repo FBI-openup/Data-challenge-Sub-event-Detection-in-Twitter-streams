@@ -10,6 +10,10 @@ from nltk.stem import WordNetLemmatizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
+from pathlib import Path
+
+# Multithreading
+from multiprocessing import Pool
 
 # logging and loading bars
 import logging
@@ -44,43 +48,59 @@ def get_avg_embedding(tweet, model, vector_size=200):
     return np.mean(word_vectors, axis=0)
 
 
-# Basic preprocessing function
+# Load resources once
+stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
+
+# Preprocessing function
+
+
 def preprocess_text(text):
     # Lowercasing
     text = text.lower()
-    # Remove punctuation
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    # Remove mentions and hashtags
+    text = re.sub(r'@\w+|#\w+', '', text)
+    # Remove punctuation and numbers
     text = re.sub(r'[^\w\s]', '', text)
-    # Remove numbers
     text = re.sub(r'\d+', '', text)
-    # Tokenization
+    # Tokenization and lemmatization
     words = text.split()
-    # Remove stopwords
-    stop_words = set(stopwords.words('english'))
-    words = [word for word in words if word not in stop_words]
-    # Lemmatization
-    lemmatizer = WordNetLemmatizer()
-    words = [lemmatizer.lemmatize(word) for word in words]
+    words = [lemmatizer.lemmatize(word)
+             for word in words if word not in stop_words]
     return ' '.join(words)
 
 
-# Read all training files and concatenate them into one dataframe
-li = []
-output_dir = "preprocessed/"
-os.makedirs(output_dir, exist_ok=True)
-for filename in tqdm(os.listdir(train_dir), desc="Preprocessing tweets..."):
-    csv_path = os.path.join(train_dir, filename)
-    pkl_path = os.path.join(dir, output_dir, filename.replace(".csv", ".pkl"))
+def process_file(file_path):
+    """Read, preprocess, and save file as pickle if not already processed."""
+    output_path = Path("preprocessed") / file_path.name.replace(".csv", ".pkl")
 
-    # Check if pickle file exists
-    if os.path.exists(pkl_path):
-        df = pd.read_pickle(pkl_path)
-    else:
-        df = pd.read_csv(csv_path)
-        df['Tweet'] = df['Tweet'].apply(preprocess_text)
-        df.to_pickle(pkl_path)
+    if output_path.exists():  # Check if pickle file exists
+        return pd.read_pickle(output_path)
 
-    li.append(df)
-df = pd.concat(li, ignore_index=True)
+    # Process and save new pickle if it doesn't exist
+    df = pd.read_csv(file_path)
+    df['Tweet'] = df['Tweet'].apply(preprocess_text)
+    df.to_pickle(output_path)
+    return df
+
+
+# Load and preprocess files in parallel
+train_dir = "train_tweets/"
+output_dir = Path("preprocessed")
+output_dir.mkdir(exist_ok=True)
+
+csv_files = [Path(train_dir) / file for file in os.listdir(train_dir)
+             if file.endswith(".csv")]
+
+with Pool() as pool:
+    all_dfs = list(
+        tqdm(pool.imap(process_file, csv_files),
+             total=len(csv_files), desc="Preprocessing tweets..."))
+
+# Concatenate all DataFrames into a single DataFrame
+df = pd.concat(all_dfs, ignore_index=True)
 
 # Apply preprocessing to each tweet and obtain vectors
 vector_size = 200  # Adjust based on the chosen GloVe model
