@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
-from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
@@ -18,7 +17,12 @@ from tqdm import tqdm
 
 # Set up logging
 logging.basicConfig(level=logging.INFO,
-                    format='%(name)s - %(levelname)s - %(message)s')
+                    format='%(levelname)s - %(message)s')
+
+# Data dir
+dir = "/Data/comev_data_challenge/"
+train_dir = os.path.join(dir, "train_tweets")
+eval_dir = os.path.join(dir, "eval_tweets")
 
 # Download some NLP models for processing, optional
 nltk.download('stopwords')
@@ -63,13 +67,12 @@ def preprocess_text(text):
 li = []
 output_dir = "preprocessed/"
 os.makedirs(output_dir, exist_ok=True)
-for filename in tqdm(os.listdir("train_tweets"), desc="Preprocessing tweets..."):
-    csv_path = os.path.join("train_tweets", filename)
-    pkl_path = os.path.join(output_dir, filename.replace(".csv", ".pkl"))
+for filename in tqdm(os.listdir(train_dir), desc="Preprocessing tweets..."):
+    csv_path = os.path.join(train_dir, filename)
+    pkl_path = os.path.join(dir, output_dir, filename.replace(".csv", ".pkl"))
 
     # Check if pickle file exists
     if os.path.exists(pkl_path):
-        logging.info("Using pickled file...")
         df = pd.read_pickle(pkl_path)
     else:
         df = pd.read_csv(csv_path)
@@ -122,17 +125,15 @@ logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
 # This time we train our classifier on the full dataset that is available to us
 logging.info("Training Logistic Regression classifier on full dataset...")
 clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
-# We add a dummy classifier for sanity purposes
-dummy_clf = DummyClassifier(strategy="most_frequent").fit(X, y)
 
 predictions = []
-dummy_predictions = []
 # We read each file separately, we preprocess the tweets and then use the
 # classifier to predict the labels. Finally, we concatenate all predictions
 # into a list that will eventually be concatenated and exported to be submitted
 # on Kaggle.
-for fname in tqdm(os.listdir("eval_tweets"), desc="Processing evaluation files"):
-    val_df = pd.read_csv("eval_tweets/" + fname)
+for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
+    csv_path = os.path.join(eval_dir, fname)
+    val_df = pd.read_csv(csv_path)
     val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
     tweet_vectors = np.vstack([get_avg_embedding(
@@ -146,18 +147,12 @@ for fname in tqdm(os.listdir("eval_tweets"), desc="Processing evaluation files")
     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
     preds = clf.predict(X)
-    dummy_preds = dummy_clf.predict(X)
 
     period_features['EventType'] = preds
-    period_features['DummyEventType'] = dummy_preds
 
     predictions.append(period_features[['ID', 'EventType']])
-    dummy_predictions.append(period_features[['ID', 'DummyEventType']])
 
 logging.info("Saving predictions to CSV files...")
 pred_df = pd.concat(predictions)
 pred_df.to_csv('logistic_predictions.csv', index=False)
-
-pred_df = pd.concat(dummy_predictions)
-pred_df.to_csv('dummy_predictions.csv', index=False)
 logging.info("Predictions saved successfully.")
