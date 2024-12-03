@@ -5,28 +5,33 @@ import gensim.downloader as api
 import nltk
 import numpy as np
 import pandas as pd
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
 from pathlib import Path
 
 # Multithreading
 from multiprocessing import Pool
 
+# Preprocessing
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+import emoji
+
 # logging and loading bars
 import logging
 from tqdm import tqdm
+
+# Training and models
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format='%(levelname)s - %(message)s')
 
 # Data dir
-dir = "/Data/comev_data_challenge/"
-train_dir = os.path.join(dir, "train_tweets")
-eval_dir = os.path.join(dir, "eval_tweets")
+dir = Path("/Data/comev_data_challenge/")
+train_dir = dir / "train_tweets"
+eval_dir = dir / "eval_tweets"
 
 # Download some NLP models for processing, optional
 nltk.download('stopwords')
@@ -38,21 +43,11 @@ embeddings_model = api.load("glove-twitter-200")
 logging.info("GloVe model loaded successfully.")
 
 
-# Function to compute the average word vector for a tweet
-def get_avg_embedding(tweet, model, vector_size=200):
-    words = tweet.split()  # Tokenize by whitespace
-    word_vectors = [model[word] for word in words if word in model]
-    # If no words in the tweet are in the vocabulary, return a zero vector
-    if not word_vectors:
-        return np.zeros(vector_size)
-    return np.mean(word_vectors, axis=0)
-
-
 # Load resources once
 stop_words = set(stopwords.words('english'))
 lemmatizer = WordNetLemmatizer()
 
-# Preprocessing function
+"""--- PREPROCESSING ---"""
 
 
 def preprocess_text(text):
@@ -61,10 +56,12 @@ def preprocess_text(text):
     # Remove URLs
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
     # Remove mentions and hashtags
-    text = re.sub(r'@\w+|#\w+', '', text)
+    text = re.sub(r'@\w+', 'USER_MENTION', text)  # Replace mentions
     # Remove punctuation and numbers
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\d+', '', text)
+    # Encode emojis
+    text = emoji.demojize(text)
     # Tokenization and lemmatization
     words = text.split()
     words = [lemmatizer.lemmatize(word)
@@ -74,33 +71,50 @@ def preprocess_text(text):
 
 def process_file(file_path):
     """Read, preprocess, and save file as pickle if not already processed."""
-    output_path = Path("preprocessed") / file_path.name.replace(".csv", ".pkl")
+    output_path = output_dir / file_path.name.replace(".csv", ".pkl")
 
     if output_path.exists():  # Check if pickle file exists
         return pd.read_pickle(output_path)
 
     # Process and save new pickle if it doesn't exist
     df = pd.read_csv(file_path)
+
+    df['hash'] = df['Tweet'].apply(lambda x: hash(x))
+    df = df.drop_duplicates(subset='hash').drop(columns='hash')
+
     df['Tweet'] = df['Tweet'].apply(preprocess_text)
     df.to_pickle(output_path)
     return df
 
 
 # Load and preprocess files in parallel
-train_dir = "train_tweets/"
-output_dir = Path("preprocessed")
+output_dir = dir / "preprocessed"
+logging.debug("Will save pickles to : ", output_dir)
 output_dir.mkdir(exist_ok=True)
 
-csv_files = [Path(train_dir) / file for file in os.listdir(train_dir)
+csv_files = [train_dir / file for file in os.listdir(train_dir)
              if file.endswith(".csv")]
 
 with Pool() as pool:
     all_dfs = list(
         tqdm(pool.imap(process_file, csv_files),
-             total=len(csv_files), desc="Preprocessing tweets..."))
+             total=len(csv_files), desc="Preprocessing tweets"))
 
 # Concatenate all DataFrames into a single DataFrame
 df = pd.concat(all_dfs, ignore_index=True)
+
+"""--- EMBEDDING ---"""
+
+
+# Function to compute the average word vector for a tweet
+def get_avg_embedding(tweet, model, vector_size=200):
+    words = tweet.split()  # Tokenize by whitespace
+    word_vectors = [model[word] for word in words if word in model]
+    # If no words in the tweet are in the vocabulary, return a zero vector
+    if not word_vectors:
+        return np.zeros(vector_size)
+    return np.mean(word_vectors, axis=0)
+
 
 # Apply preprocessing to each tweet and obtain vectors
 vector_size = 200  # Adjust based on the chosen GloVe model
@@ -152,7 +166,7 @@ predictions = []
 # into a list that will eventually be concatenated and exported to be submitted
 # on Kaggle.
 for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
-    csv_path = os.path.join(eval_dir, fname)
+    csv_path = Path(eval_dir) / fname
     val_df = pd.read_csv(csv_path)
     val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
