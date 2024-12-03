@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 # Set up logging
 logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+                    format='%(name)s - %(levelname)s - %(message)s')
 
 # Download some NLP models for processing, optional
 nltk.download('stopwords')
@@ -61,22 +61,28 @@ def preprocess_text(text):
 
 # Read all training files and concatenate them into one dataframe
 li = []
-for filename in os.listdir("train_tweets"):
-    df = pd.read_csv("train_tweets/" + filename)
+output_dir = "preprocessed/"
+os.makedirs(output_dir, exist_ok=True)
+for filename in tqdm(os.listdir("train_tweets"), desc="Preprocessing tweets..."):
+    csv_path = os.path.join("train_tweets", filename)
+    pkl_path = os.path.join(output_dir, filename.replace(".csv", ".pkl"))
+
+    # Check if pickle file exists
+    if os.path.exists(pkl_path):
+        logging.info("Using pickled file...")
+        df = pd.read_pickle(pkl_path)
+    else:
+        df = pd.read_csv(csv_path)
+        df['Tweet'] = df['Tweet'].apply(preprocess_text)
+        df.to_pickle(pkl_path)
+
     li.append(df)
 df = pd.concat(li, ignore_index=True)
-
-# Apply preprocessing to each tweet
-df['Tweet'] = df['Tweet'].apply(preprocess_text)
-
 
 # Apply preprocessing to each tweet and obtain vectors
 vector_size = 200  # Adjust based on the chosen GloVe model
 tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size)
                           for tweet in tqdm(df['Tweet'], desc="Generating vectors")])
-# with ProcessPoolExecutor() as executor:
-#     tweet_vectors = list(tqdm(executor.map(lambda tweet: get_avg_embedding(
-#         tweet, embeddings_model), df['Tweet']), total=len(df), desc="Generating vectors"))
 tweet_df = pd.DataFrame(tweet_vectors)
 
 # Attach the vectors into the original dataframe
