@@ -33,6 +33,8 @@ logging.basicConfig(level=logging.INFO,
 # Data dir
 # TODO : test if /data exists
 dir = Path("/Data/comev_data_challenge/")
+if not dir.exists():
+    dir = Path("./")
 train_dir = dir / "train_tweets"
 eval_dir = dir / "eval_tweets"
 
