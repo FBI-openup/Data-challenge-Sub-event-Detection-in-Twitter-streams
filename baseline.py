@@ -134,17 +134,23 @@ def encode_tweets_in_batches(texts, batch_size=128):
     return np.vstack(all_embeddings)
 
 
-# Convert tweets to embeddings
-embeddings = encode_tweets_in_batches(
-    df['Tweet'].tolist(), batch_size=128)
-
-# Add embeddings to DataFrame
-embedding_df = pd.DataFrame(embeddings.numpy(), columns=[
-                            f'Embedding_{i}' for i in range(embeddings.shape[1])])
-df = pd.concat([df, embedding_df], axis=1)
 embeddings_output_dir = dir / "embeddings"
 embeddings_output_dir.mkdir(exist_ok=True)
-df.to_pickle(embeddings_output_dir)
+
+if embeddings_output_dir.exists():
+    logging.info("Reading embeddings from file...")
+    with open(embeddings_output_dir, 'rb') as file:
+        df = pickle.load(file)
+else:
+    # Convert tweets to embeddings
+    embeddings = encode_tweets_in_batches(
+        df['Tweet'].tolist(), batch_size=128)
+
+    # Add embeddings to DataFrame
+    embedding_df = pd.DataFrame(embeddings.numpy(), columns=[
+                                f'Embedding_{i}' for i in range(embeddings.shape[1])])
+    df = pd.concat([df, embedding_df], axis=1)
+    df.to_pickle(embeddings_output_dir)
 
 # Normalize the timestamps to range [0, 1] to use as weights
 # Ensure proper datetime format
@@ -176,12 +182,12 @@ y = period_features['EventType'].values
 # classifier without fine-tuning into the validation set and without submitting
 # too many times into Kaggle
 clf_path = Path("models/RandomForestClassifier")
-if os.path.exists(clf_path):
-    print("Loading the Random Forest classifier from pickle file...")
+if clf_path.exists():
+    logging.debug("Loading the Random Forest classifier from pickle file...")
     with open(clf_path, 'rb') as file:
         clf = pickle.load(file)
 else:
-    print("Training a new Random Forest classifier...")
+    logging.info("Training a new Random Forest classifier...")
     # Split the data into training and test sets
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42)
@@ -193,12 +199,12 @@ else:
     # Save the trained classifier to a pickle file
     with open(clf_path, 'wb') as file:
         pickle.dump(clf, file)
-    print("Classifier saved to pickle file.")
+    logging.debug("Classifier saved to pickle file.")
 
     # Evaluate the classifier on the test set
     y_pred = clf.predict(X_test)
-    print(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
-    print(f"Classification Report:\n{classification_report(y_test, y_pred)}")
+    logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    logging.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
 
 # For Kaggle submission
 
