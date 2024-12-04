@@ -1,10 +1,10 @@
 # Base
 import os
 import re
-import gensim.downloader as api
 import nltk
-import numpy as np
 import pandas as pd
+import pickle
+import numpy as np
 from pathlib import Path
 
 # Multithreading
@@ -14,6 +14,7 @@ from multiprocessing import Pool
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import emoji
+from sentence_transformers import SentenceTransformer
 
 # logging and loading bars
 import logging
@@ -21,7 +22,8 @@ from tqdm import tqdm
 
 # Training and models
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 
 # Set up logging
@@ -29,19 +31,16 @@ logging.basicConfig(level=logging.INFO,
                     format='%(levelname)s - %(message)s')
 
 # Data dir
+# TODO : test if /data exists
 dir = Path("/Data/comev_data_challenge/")
+if not dir.exists():
+    dir = Path("./")
 train_dir = dir / "train_tweets"
 eval_dir = dir / "eval_tweets"
 
 # Download some NLP models for processing, optional
 nltk.download('stopwords')
 nltk.download('wordnet')
-# Load GloVe model with Gensim's API
-# 200-dimensional GloVe embeddings
-logging.info("Loading GloVe model...")
-embeddings_model = api.load("glove-twitter-200")
-logging.info("GloVe model loaded successfully.")
-
 
 # Load resources once
 stop_words = set(stopwords.words('english'))
@@ -106,36 +105,40 @@ df = pd.concat(all_dfs, ignore_index=True)
 """--- EMBEDDING ---"""
 
 
-# Function to compute the average word vector for a tweet
-def get_avg_embedding(tweet, model, vector_size=200):
-    words = tweet.split()  # Tokenize by whitespace
-    word_vectors = [model[word] for word in words if word in model]
-    # If no words in the tweet are in the vocabulary, return a zero vector
-    if not word_vectors:
-        return np.zeros(vector_size)
-    return np.mean(word_vectors, axis=0)
+# Load a more powerful pre-trained Sentence-BERT model for social media text
+model = SentenceTransformer('paraphrase-mpnet-base-v2')
+
+# Convert tweets to embeddings
+tweet_texts = df['Tweet'].tolist()
+tweet_embeddings = model.encode(tweet_texts, show_progress_bar=True)
+
+# Add embeddings to DataFrame
+embedding_df = pd.DataFrame(tweet_embeddings, columns=[
+                            f'Embedding_{i}' for i in range(tweet_embeddings.shape[1])])
+df = pd.concat([df, embedding_df], axis=1)
+
+# Normalize the timestamps to range [0, 1] to use as weights
+# Ensure proper datetime format
+df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+df['Timestamp_Normalized'] = (df['Timestamp'] - df['Timestamp'].min()) / (
+    df['Timestamp'].max() - df['Timestamp'].min())
 
 
-# Apply preprocessing to each tweet and obtain vectors
-vector_size = 200  # Adjust based on the chosen GloVe model
-tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size)
-                          for tweet in tqdm(df['Tweet'], desc="Generating vectors")])
-tweet_df = pd.DataFrame(tweet_vectors)
+# Weighted mean function
+def weighted_mean(group):
+    weights = group['Timestamp_Normalized'].values
+    embeddings = group[[
+        col for col in group.columns if 'Embedding_' in col]].values
+    weighted_embeddings = np.average(embeddings, axis=0, weights=weights)
+    return pd.Series(weighted_embeddings, index=[f'Embedding_{i}' for i in range(embeddings.shape[1])])
 
-# Attach the vectors into the original dataframe
-period_features = pd.concat([df, tweet_df], axis=1)
-# Drop the columns that are not useful anymore
-period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
-# Group the tweets into their corresponding periods.
-# This way we generate an average embedding vector for each period
-period_features = period_features.groupby(
-    ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
 
-# We drop the non-numerical features and keep the embeddings values
-# for each period
-X = period_features.drop(
-    columns=['EventType', 'MatchID', 'PeriodID', 'ID']).values
-# We extract the labels of our training samples
+# Group by MatchID, PeriodID, and ID, and compute weighted mean embeddings
+period_features = df.groupby(['MatchID', 'PeriodID', 'ID']).apply(
+    weighted_mean).reset_index()
+
+# Extract features and labels for training
+X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 y = period_features['EventType'].values
 
 # Evaluating on a test set:
@@ -143,16 +146,30 @@ y = period_features['EventType'].values
 # We split our data into a training and test set that we can use to train our
 # classifier without fine-tuning into the validation set and without submitting
 # too many times into Kaggle
-logging.info("Splitting data into training and test sets...")
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.3, random_state=42)
+clf_path = Path("models/RandomForestClassifier")
+if os.path.exists(clf_path):
+    print("Loading the Random Forest classifier from pickle file...")
+    with open(clf_path, 'rb') as file:
+        clf = pickle.load(file)
+else:
+    print("Training a new Random Forest classifier...")
+    # Split the data into training and test sets
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42)
 
-# We set up a basic classifier that we train and then calculate
-# the accuracy on our test set
-logging.info("Training Logistic Regression classifier...")
-clf = LogisticRegression(random_state=42, max_iter=1000).fit(X_train, y_train)
-y_pred = clf.predict(X_test)
-logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    # Train a new Random Forest classifier
+    clf = RandomForestClassifier(random_state=42, n_estimators=100)
+    clf.fit(X_train, y_train)
+
+    # Save the trained classifier to a pickle file
+    with open(clf_path, 'wb') as file:
+        pickle.dump(clf, file)
+    print("Classifier saved to pickle file.")
+
+    # Evaluate the classifier on the test set
+    y_pred = clf.predict(X_test)
+    print(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    print(f"Classification Report:\n{classification_report(y_test, y_pred)}")
 
 # For Kaggle submission
 
@@ -160,33 +177,41 @@ logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
 logging.info("Training Logistic Regression classifier on full dataset...")
 clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
 
-predictions = []
 # We read each file separately, we preprocess the tweets and then use the
 # classifier to predict the labels. Finally, we concatenate all predictions
 # into a list that will eventually be concatenated and exported to be submitted
 # on Kaggle.
+# Iterate over files in the evaluation directory
+predictions = []
 for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
     csv_path = Path(eval_dir) / fname
     val_df = pd.read_csv(csv_path)
+
     val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
-    tweet_vectors = np.vstack([get_avg_embedding(
-        tweet, embeddings_model, vector_size) for tweet in val_df['Tweet']])
-    tweet_df = pd.DataFrame(tweet_vectors)
+    # Convert tweets to embeddings using Sentence-BERT
+    tweet_texts = val_df['Tweet'].tolist()
+    tweet_embeddings = model.encode(tweet_texts, show_progress_bar=True)
 
-    period_features = pd.concat([val_df, tweet_df], axis=1)
-    period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
-    period_features = period_features.groupby(
+    tweet_embeddings_df = pd.DataFrame(tweet_embeddings, columns=[
+        f'Embedding_{i}' for i in range(tweet_embeddings.shape[1])
+    ])
+    val_df = pd.concat([val_df, tweet_embeddings_df], axis=1)
+    val_df = val_df.drop(columns=['Timestamp', 'Tweet'])
+    period_features = val_df.groupby(
         ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+
     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
+    # Predict event types
     preds = clf.predict(X)
-
     period_features['EventType'] = preds
-
     predictions.append(period_features[['ID', 'EventType']])
+
+# Concatenate all predictions (if there are multiple files)
+final_predictions = pd.concat(predictions, axis=0)
 
 logging.info("Saving predictions to CSV files...")
 pred_df = pd.concat(predictions)
-pred_df.to_csv('logistic_predictions.csv', index=False)
+pred_df.to_csv('predictions.csv', index=False)
 logging.info("Predictions saved successfully.")
