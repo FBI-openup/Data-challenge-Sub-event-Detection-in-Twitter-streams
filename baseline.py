@@ -14,7 +14,6 @@ from multiprocessing import Pool
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import emoji
-from sentence_transformers import SentenceTransformer
 
 # logging and loading bars
 import logging
@@ -25,13 +24,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
+from transformers import AutoTokenizer, AutoModel
+import torch
 
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format='%(levelname)s - %(message)s')
 
 # Data dir
-# TODO : test if /data exists
 dir = Path("/Data/comev_data_challenge/")
 if not dir.exists():
     dir = Path("./")
@@ -50,12 +50,11 @@ lemmatizer = WordNetLemmatizer()
 
 
 def preprocess_text(text):
-    # Lowercasing
-    text = text.lower()
-    # Remove URLs
-    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-    # Remove mentions and hashtags
-    text = re.sub(r'@\w+', 'USER_MENTION', text)  # Replace mentions
+    # Lowercasing is not required, as BERTweet handles case sensitivity well
+    # Replace URLs and mentions with BERTweet-compatible tokens
+    text = re.sub(r'http\S+|www\S+|https\S+', 'URL', text, flags=re.MULTILINE)
+    text = re.sub(r'@\w+', 'USER', text)  # Replace mentions with USER
+    text = re.sub(r'#[A-Za-z0-9_]+', '', text)  # Remove hashtags
     # Remove punctuation and numbers
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\d+', '', text)
@@ -104,18 +103,48 @@ df = pd.concat(all_dfs, ignore_index=True)
 
 """--- EMBEDDING ---"""
 
+tokenizer = AutoTokenizer.from_pretrained('vinai/bertweet-base')
+model = AutoModel.from_pretrained('vinai/bertweet-base')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model.to(device)
 
-# Load a more powerful pre-trained Sentence-BERT model for social media text
-model = SentenceTransformer('paraphrase-mpnet-base-v2')
+
+def encode_tweets_in_batches(texts, batch_size=128):
+    all_embeddings = []
+    for i in tqdm(range(0, len(texts), batch_size), desc="Tokenizing and embedding tweets"):
+        batch_texts = texts[i:i+batch_size]
+        tokens = tokenizer(batch_texts, padding=True,
+                           truncation=True, return_tensors="pt",
+                           max_length=128)
+
+        # Move tensors to appropriate device (GPU if available, otherwise CPU)
+        tokens = {key: val.to(torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu'))
+                    for key, val in tokens.items()}
+        model.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+
+        # Encode batch and get embeddings
+        with torch.no_grad():
+            outputs = model(**tokens)
+            embeddings = outputs.last_hidden_state.mean(dim=1)
+
+        # Move embeddings back to CPU to save memory
+        all_embeddings.append(embeddings.cpu().numpy())
+
+    return np.vstack(all_embeddings)
+
 
 # Convert tweets to embeddings
-tweet_texts = df['Tweet'].tolist()
-tweet_embeddings = model.encode(tweet_texts, show_progress_bar=True)
+embeddings = encode_tweets_in_batches(
+    df['Tweet'].tolist(), batch_size=128)
 
 # Add embeddings to DataFrame
-embedding_df = pd.DataFrame(tweet_embeddings, columns=[
-                            f'Embedding_{i}' for i in range(tweet_embeddings.shape[1])])
+embedding_df = pd.DataFrame(embeddings.numpy(), columns=[
+                            f'Embedding_{i}' for i in range(embeddings.shape[1])])
 df = pd.concat([df, embedding_df], axis=1)
+embeddings_output_dir = dir / "embeddings"
+embeddings_output_dir.mkdir(exist_ok=True)
+df.to_pickle(embeddings_output_dir)
 
 # Normalize the timestamps to range [0, 1] to use as weights
 # Ensure proper datetime format
@@ -187,29 +216,38 @@ for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
     csv_path = Path(eval_dir) / fname
     val_df = pd.read_csv(csv_path)
 
-    val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
+    # Preprocess tweets
+    val_df['Preprocessed_Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
-    # Convert tweets to embeddings using Sentence-BERT
-    tweet_texts = val_df['Tweet'].tolist()
-    tweet_embeddings = model.encode(tweet_texts, show_progress_bar=True)
+    # Encode tweets in batches using BERTweet
+    tweet_texts = val_df['Preprocessed_Tweet'].tolist()
+    tweet_embeddings = encode_tweets_in_batches(tweet_texts, batch_size=32)
 
+    # Add embeddings to DataFrame
     tweet_embeddings_df = pd.DataFrame(tweet_embeddings, columns=[
         f'Embedding_{i}' for i in range(tweet_embeddings.shape[1])
     ])
     val_df = pd.concat([val_df, tweet_embeddings_df], axis=1)
-    val_df = val_df.drop(columns=['Timestamp', 'Tweet'])
+
+    # Drop unnecessary columns
+    val_df = val_df.drop(columns=['Timestamp', 'Tweet', 'Preprocessed_Tweet'])
+
+    # Group by MatchID, PeriodID, and ID, and compute mean embeddings
     period_features = val_df.groupby(
         ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
 
+    # Extract features for prediction
     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
-    # Predict event types
+    # Predict event types using the classifier
     preds = clf.predict(X)
     period_features['EventType'] = preds
+
+    # Save predictions
     predictions.append(period_features[['ID', 'EventType']])
 
-# Concatenate all predictions (if there are multiple files)
-final_predictions = pd.concat(predictions, axis=0)
+# Combine all predictions into a single DataFrame
+final_predictions = pd.concat(predictions, ignore_index=True)
 
 logging.info("Saving predictions to CSV files...")
 pred_df = pd.concat(predictions)
