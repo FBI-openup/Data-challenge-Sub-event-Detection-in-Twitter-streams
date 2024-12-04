@@ -1,4 +1,5 @@
 # Data-challenge-Sub-event-Detection-in-Twitter-streams
+Check conception and deatailed report in : Data challenge.docx
 
 ## Data
 
