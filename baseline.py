@@ -136,10 +136,11 @@ def encode_tweets_in_batches(texts, batch_size=128):
 
 embeddings_output_dir = dir / "embeddings"
 embeddings_output_dir.mkdir(exist_ok=True)
+embeddings_output_file = embeddings_output_dir / "embeddings.pkl"
 
-if embeddings_output_dir.exists():
+if embeddings_output_file.exists():
     logging.info("Reading embeddings from file...")
-    with open(embeddings_output_dir, 'rb') as file:
+    with open(embeddings_output_file, 'rb') as file:
         df = pickle.load(file)
 else:
     # Convert tweets to embeddings
@@ -147,10 +148,10 @@ else:
         df['Tweet'].tolist(), batch_size=128)
 
     # Add embeddings to DataFrame
-    embedding_df = pd.DataFrame(embeddings.numpy(), columns=[
+    embedding_df = pd.DataFrame(embeddings, columns=[
                                 f'Embedding_{i}' for i in range(embeddings.shape[1])])
     df = pd.concat([df, embedding_df], axis=1)
-    df.to_pickle(embeddings_output_dir)
+    df.to_pickle(embeddings_output_file)
 
 # Normalize the timestamps to range [0, 1] to use as weights
 # Ensure proper datetime format
@@ -174,7 +175,7 @@ period_features = df.groupby(['MatchID', 'PeriodID', 'ID']).apply(
 
 # Extract features and labels for training
 X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
-y = period_features['EventType'].values
+y = df['EventType'].values
 
 # Evaluating on a test set:
 
