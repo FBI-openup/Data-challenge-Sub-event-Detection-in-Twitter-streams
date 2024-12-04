@@ -5,20 +5,33 @@ import gensim.downloader as api
 import nltk
 import numpy as np
 import pandas as pd
+from pathlib import Path
+
+# Multithreading
+from multiprocessing import Pool
+
+# Preprocessing
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
-from sklearn.dummy import DummyClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
+import emoji
 
 # logging and loading bars
 import logging
 from tqdm import tqdm
 
+# Training and models
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+
 # Set up logging
 logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+                    format='%(levelname)s - %(message)s')
+
+# Data dir
+dir = Path("/Data/comev_data_challenge/")
+train_dir = dir / "train_tweets"
+eval_dir = dir / "eval_tweets"
 
 # Download some NLP models for processing, optional
 nltk.download('stopwords')
@@ -28,6 +41,69 @@ nltk.download('wordnet')
 logging.info("Loading GloVe model...")
 embeddings_model = api.load("glove-twitter-200")
 logging.info("GloVe model loaded successfully.")
+
+
+# Load resources once
+stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
+
+"""--- PREPROCESSING ---"""
+
+
+def preprocess_text(text):
+    # Lowercasing
+    text = text.lower()
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    # Remove mentions and hashtags
+    text = re.sub(r'@\w+', 'USER_MENTION', text)  # Replace mentions
+    # Remove punctuation and numbers
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\d+', '', text)
+    # Encode emojis
+    text = emoji.demojize(text)
+    # Tokenization and lemmatization
+    words = text.split()
+    words = [lemmatizer.lemmatize(word)
+             for word in words if word not in stop_words]
+    return ' '.join(words)
+
+
+def process_file(file_path):
+    """Read, preprocess, and save file as pickle if not already processed."""
+    output_path = output_dir / file_path.name.replace(".csv", ".pkl")
+
+    if output_path.exists():  # Check if pickle file exists
+        return pd.read_pickle(output_path)
+
+    # Process and save new pickle if it doesn't exist
+    df = pd.read_csv(file_path)
+
+    df['hash'] = df['Tweet'].apply(lambda x: hash(x))
+    df = df.drop_duplicates(subset='hash').drop(columns='hash')
+
+    df['Tweet'] = df['Tweet'].apply(preprocess_text)
+    df.to_pickle(output_path)
+    return df
+
+
+# Load and preprocess files in parallel
+output_dir = dir / "preprocessed"
+logging.debug("Will save pickles to : ", output_dir)
+output_dir.mkdir(exist_ok=True)
+
+csv_files = [train_dir / file for file in os.listdir(train_dir)
+             if file.endswith(".csv")]
+
+with Pool() as pool:
+    all_dfs = list(
+        tqdm(pool.imap(process_file, csv_files),
+             total=len(csv_files), desc="Preprocessing tweets"))
+
+# Concatenate all DataFrames into a single DataFrame
+df = pd.concat(all_dfs, ignore_index=True)
+
+"""--- EMBEDDING ---"""
 
 
 # Function to compute the average word vector for a tweet
@@ -40,43 +116,10 @@ def get_avg_embedding(tweet, model, vector_size=200):
     return np.mean(word_vectors, axis=0)
 
 
-# Basic preprocessing function
-def preprocess_text(text):
-    # Lowercasing
-    text = text.lower()
-    # Remove punctuation
-    text = re.sub(r'[^\w\s]', '', text)
-    # Remove numbers
-    text = re.sub(r'\d+', '', text)
-    # Tokenization
-    words = text.split()
-    # Remove stopwords
-    stop_words = set(stopwords.words('english'))
-    words = [word for word in words if word not in stop_words]
-    # Lemmatization
-    lemmatizer = WordNetLemmatizer()
-    words = [lemmatizer.lemmatize(word) for word in words]
-    return ' '.join(words)
-
-
-# Read all training files and concatenate them into one dataframe
-li = []
-for filename in os.listdir("train_tweets"):
-    df = pd.read_csv("train_tweets/" + filename)
-    li.append(df)
-df = pd.concat(li, ignore_index=True)
-
-# Apply preprocessing to each tweet
-df['Tweet'] = df['Tweet'].apply(preprocess_text)
-
-
 # Apply preprocessing to each tweet and obtain vectors
 vector_size = 200  # Adjust based on the chosen GloVe model
 tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size)
                           for tweet in tqdm(df['Tweet'], desc="Generating vectors")])
-# with ProcessPoolExecutor() as executor:
-#     tweet_vectors = list(tqdm(executor.map(lambda tweet: get_avg_embedding(
-#         tweet, embeddings_model), df['Tweet']), total=len(df), desc="Generating vectors"))
 tweet_df = pd.DataFrame(tweet_vectors)
 
 # Attach the vectors into the original dataframe
@@ -116,17 +159,15 @@ logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
 # This time we train our classifier on the full dataset that is available to us
 logging.info("Training Logistic Regression classifier on full dataset...")
 clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
-# We add a dummy classifier for sanity purposes
-dummy_clf = DummyClassifier(strategy="most_frequent").fit(X, y)
 
 predictions = []
-dummy_predictions = []
 # We read each file separately, we preprocess the tweets and then use the
 # classifier to predict the labels. Finally, we concatenate all predictions
 # into a list that will eventually be concatenated and exported to be submitted
 # on Kaggle.
-for fname in tqdm(os.listdir("eval_tweets"), desc="Processing evaluation files"):
-    val_df = pd.read_csv("eval_tweets/" + fname)
+for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
+    csv_path = Path(eval_dir) / fname
+    val_df = pd.read_csv(csv_path)
     val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
     tweet_vectors = np.vstack([get_avg_embedding(
@@ -140,18 +181,12 @@ for fname in tqdm(os.listdir("eval_tweets"), desc="Processing evaluation files")
     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
     preds = clf.predict(X)
-    dummy_preds = dummy_clf.predict(X)
 
     period_features['EventType'] = preds
-    period_features['DummyEventType'] = dummy_preds
 
     predictions.append(period_features[['ID', 'EventType']])
-    dummy_predictions.append(period_features[['ID', 'DummyEventType']])
 
 logging.info("Saving predictions to CSV files...")
 pred_df = pd.concat(predictions)
 pred_df.to_csv('logistic_predictions.csv', index=False)
-
-pred_df = pd.concat(dummy_predictions)
-pred_df.to_csv('dummy_predictions.csv', index=False)
 logging.info("Predictions saved successfully.")
