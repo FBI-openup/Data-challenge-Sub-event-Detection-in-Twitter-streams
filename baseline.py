@@ -14,7 +14,6 @@ from multiprocessing import Pool
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import emoji
-from sentence_transformers import SentenceTransformer
 
 # logging and loading bars
 import logging
@@ -25,13 +24,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
+from transformers import AutoTokenizer, AutoModel
+import torch
 
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format='%(levelname)s - %(message)s')
 
 # Data dir
-# TODO : test if /data exists
 dir = Path("/Data/comev_data_challenge/")
 if not dir.exists():
     dir = Path("./")
@@ -50,12 +50,12 @@ lemmatizer = WordNetLemmatizer()
 
 
 def preprocess_text(text):
-    # Lowercasing
-    text = text.lower()
-    # Remove URLs
-    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-    # Remove mentions and hashtags
-    text = re.sub(r'@\w+', 'USER_MENTION', text)  # Replace mentions
+    # Lowercasing is not required, as BERTweet handles case sensitivity well
+    # Replace URLs and mentions with BERTweet-compatible tokens
+    text = re.sub(r'http\S+|www\S+|https\S+', 'URL', text, flags=re.MULTILINE)
+    text = re.sub(r'@\w+', 'USER', text)  # Replace mentions with USER
+    text = re.sub(r'#[A-Za-z0-9_]+', '', text)  # Remove hashtags
+    # maybe keep it text = re.sub(r'#\w+', 'HASHTAG', text) 
     # Remove punctuation and numbers
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\d+', '', text)
@@ -104,55 +104,109 @@ df = pd.concat(all_dfs, ignore_index=True)
 
 """--- EMBEDDING ---"""
 
-
-# Load a more powerful pre-trained Sentence-BERT model for social media text
-model = SentenceTransformer('paraphrase-mpnet-base-v2')
-
-# Convert tweets to embeddings
-tweet_texts = df['Tweet'].tolist()
-tweet_embeddings = model.encode(tweet_texts, show_progress_bar=True)
-
-# Add embeddings to DataFrame
-embedding_df = pd.DataFrame(tweet_embeddings, columns=[
-                            f'Embedding_{i}' for i in range(tweet_embeddings.shape[1])])
-df = pd.concat([df, embedding_df], axis=1)
-
-# Normalize the timestamps to range [0, 1] to use as weights
-# Ensure proper datetime format
-df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-df['Timestamp_Normalized'] = (df['Timestamp'] - df['Timestamp'].min()) / (
-    df['Timestamp'].max() - df['Timestamp'].min())
+tokenizer = AutoTokenizer.from_pretrained('vinai/bertweet-base')
+model = AutoModel.from_pretrained('vinai/bertweet-base')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model.to(device)
 
 
-# Weighted mean function
-def weighted_mean(group):
-    weights = group['Timestamp_Normalized'].values
-    embeddings = group[[
-        col for col in group.columns if 'Embedding_' in col]].values
-    weighted_embeddings = np.average(embeddings, axis=0, weights=weights)
-    return pd.Series(weighted_embeddings, index=[f'Embedding_{i}' for i in range(embeddings.shape[1])])
+def encode_tweets_in_batches(texts, batch_size=128):
+    all_embeddings = []
+    for i in tqdm(range(0, len(texts), batch_size), desc="Tokenizing and embedding tweets"):
+        batch_texts = texts[i:i+batch_size]
+        tokens = tokenizer(batch_texts, padding=True,
+                           truncation=True, return_tensors="pt",
+                           max_length=128)
+
+        # Move tensors to appropriate device (GPU if available, otherwise CPU)
+        tokens = {key: val.to(torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu'))
+                    for key, val in tokens.items()}
+        model.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+
+        # Encode batch and get embeddings
+        with torch.no_grad():
+            outputs = model(**tokens)
+            embeddings = outputs.last_hidden_state.mean(dim=1)
+
+        # Move embeddings back to CPU to save memory
+        all_embeddings.append(embeddings.cpu().numpy())
+
+    return np.vstack(all_embeddings)
 
 
-# Group by MatchID, PeriodID, and ID, and compute weighted mean embeddings
-period_features = df.groupby(['MatchID', 'PeriodID', 'ID']).apply(
-    weighted_mean).reset_index()
+embeddings_output_dir = dir / "embeddings"
+embeddings_output_dir.mkdir(exist_ok=True)
+embeddings_output_file = embeddings_output_dir / "embeddings.pkl"
 
-# Extract features and labels for training
-X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
-y = period_features['EventType'].values
+if embeddings_output_file.exists():
+    logging.info("Reading embeddings from file...")
+    with open(embeddings_output_file, 'rb') as file:
+        df = pickle.load(file)
+else:
+    # Convert tweets to embeddings
+    embeddings = encode_tweets_in_batches(
+        df['Tweet'].tolist(), batch_size=128)
+
+    # Add embeddings to DataFrame
+    embedding_df = pd.DataFrame(embeddings, columns=[
+                                f'Embedding_{i}' for i in range(embeddings.shape[1])])
+    df = pd.concat([df, embedding_df], axis=1)
+    df.to_pickle(embeddings_output_file)
+
+#TODO operations on the dataframe
+
+
+# Assuming 'df' already contains the columns: ['ID', 'MatchID', 'PeriodID', 'EventType', 'Timestamp', 'Tweet', 'Embedding_0', ..., 'Embedding_n']
+
+# 1. Convert 'Timestamp' to datetime and create 'TimeWindow' (rounded down to the nearest minute)
+df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms')
+df['TimeWindow'] = df['Timestamp'].dt.floor('min')  # group for minute frequency
+
+# 2. Identify embedding columns
+embedding_cols = [col for col in df.columns if col.startswith('Embedding_')]
+
+# 3. Group by 'TimeWindow' and compute mean embeddings and tweet count
+window_features = df.groupby('TimeWindow').agg(
+    {
+        **{col: 'mean' for col in embedding_cols},  # Mean of embeddings
+        'Tweet': 'count'  # Count of tweets
+    }
+).reset_index()
+
+# 4. Rename 'Tweet' column to 'TweetCount'
+window_features.rename(columns={'Tweet': 'TweetCount'}, inplace=True)
+
+# 5. Determine if an event occurred in each TimeWindow
+# Assuming 'EventType' is 1 when an event occurred, 0 otherwise
+event_in_window = df.groupby('TimeWindow')['EventType'].max().reset_index()
+
+# Merge 'EventType' into 'window_features'
+window_features = window_features.merge(event_in_window, on='TimeWindow', how='left')
+
+# Fill NaN values in 'EventType' with 0 (no event occurred)
+window_features['EventType'] = window_features['EventType'].fillna(0)
+
+# 6. Prepare features and labels for training
+# Features: embeddings and 'TweetCount'
+X = window_features.drop(columns=['TimeWindow', 'EventType']).values
+
+# Labels: 'EventType' (whether an event occurred in that minute)
+y = window_features['EventType'].values.astype(int)
 
 # Evaluating on a test set:
 
 # We split our data into a training and test set that we can use to train our
 # classifier without fine-tuning into the validation set and without submitting
 # too many times into Kaggle
-clf_path = Path("models/RandomForestClassifier")
-if os.path.exists(clf_path):
-    print("Loading the Random Forest classifier from pickle file...")
+clf_dir = Path("./models/")
+clf_path = clf_dir / "random_forest.pkl"
+if clf_path.exists():
+    logging.debug("Loading the Random Forest classifier from pickle file...")
     with open(clf_path, 'rb') as file:
         clf = pickle.load(file)
 else:
-    print("Training a new Random Forest classifier...")
+    logging.info("Training a new Random Forest classifier...")
     # Split the data into training and test sets
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.3, random_state=42)
@@ -162,20 +216,21 @@ else:
     clf.fit(X_train, y_train)
 
     # Save the trained classifier to a pickle file
+    clf_dir.mkdir(exist_ok=True)
     with open(clf_path, 'wb') as file:
         pickle.dump(clf, file)
-    print("Classifier saved to pickle file.")
+    logging.debug("Classifier saved to pickle file.")
 
     # Evaluate the classifier on the test set
     y_pred = clf.predict(X_test)
-    print(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
-    print(f"Classification Report:\n{classification_report(y_test, y_pred)}")
+    logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    logging.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
 
 # For Kaggle submission
 
 # This time we train our classifier on the full dataset that is available to us
 logging.info("Training Logistic Regression classifier on full dataset...")
-clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
+clf = RandomForestClassifier(random_state=42, n_estimators=100).fit(X, y)
 
 # We read each file separately, we preprocess the tweets and then use the
 # classifier to predict the labels. Finally, we concatenate all predictions
@@ -187,29 +242,38 @@ for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
     csv_path = Path(eval_dir) / fname
     val_df = pd.read_csv(csv_path)
 
-    val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
+    # Preprocess tweets
+    val_df['Preprocessed_Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
-    # Convert tweets to embeddings using Sentence-BERT
-    tweet_texts = val_df['Tweet'].tolist()
-    tweet_embeddings = model.encode(tweet_texts, show_progress_bar=True)
+    # Encode tweets in batches using BERTweet
+    tweet_texts = val_df['Preprocessed_Tweet'].tolist()
+    tweet_embeddings = encode_tweets_in_batches(tweet_texts, batch_size=32)
 
+    # Add embeddings to DataFrame
     tweet_embeddings_df = pd.DataFrame(tweet_embeddings, columns=[
         f'Embedding_{i}' for i in range(tweet_embeddings.shape[1])
     ])
     val_df = pd.concat([val_df, tweet_embeddings_df], axis=1)
-    val_df = val_df.drop(columns=['Timestamp', 'Tweet'])
+
+    # Drop unnecessary columns
+    val_df = val_df.drop(columns=['Timestamp', 'Tweet', 'Preprocessed_Tweet'])
+
+    # Group by MatchID, PeriodID, and ID, and compute mean embeddings
     period_features = val_df.groupby(
         ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
 
+    # Extract features for prediction
     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
-    # Predict event types
+    # Predict event types using the classifier
     preds = clf.predict(X)
     period_features['EventType'] = preds
+
+    # Save predictions
     predictions.append(period_features[['ID', 'EventType']])
 
-# Concatenate all predictions (if there are multiple files)
-final_predictions = pd.concat(predictions, axis=0)
+# Combine all predictions into a single DataFrame
+final_predictions = pd.concat(predictions, ignore_index=True)
 
 logging.info("Saving predictions to CSV files...")
 pred_df = pd.concat(predictions)

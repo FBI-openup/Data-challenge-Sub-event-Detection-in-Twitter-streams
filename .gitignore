@@ -1,3 +1,5 @@
 eval_tweets/
 train_tweets/
+embeddings/
 preprocessed/
+models/
