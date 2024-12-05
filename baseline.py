@@ -20,12 +20,13 @@ import logging
 from tqdm import tqdm
 
 # Training and models
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 from transformers import AutoTokenizer, AutoModel
 import torch
+import torch.nn as nn
+from torch.optim import Adam
 
 # Argument parsing setup
 import argparse
@@ -144,10 +145,10 @@ df = pd.concat(all_dfs, ignore_index=True)
 """--- EMBEDDING ---"""
 
 tokenizer = AutoTokenizer.from_pretrained('vinai/bertweet-base')
-model = AutoModel.from_pretrained('vinai/bertweet-base')
+bert_model = AutoModel.from_pretrained('vinai/bertweet-base')
 device = torch.device('cuda' if torch.cuda.is_available()
                       and not args.use_cpu else 'cpu')
-model.to(device)
+bert_model.to(device)
 
 
 def encode_tweets_in_batches(texts, batch_size=args.batch_size):
@@ -162,11 +163,11 @@ def encode_tweets_in_batches(texts, batch_size=args.batch_size):
         tokens = {key: val.to(torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'))
             for key, val in tokens.items()}
-        model.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        bert_model.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 
         # Encode batch and get embeddings
         with torch.no_grad():
-            outputs = model(**tokens)
+            outputs = bert_model(**tokens)
             embeddings = outputs.last_hidden_state.mean(dim=1)
 
         # Move embeddings back to CPU to save memory
@@ -235,52 +236,121 @@ def window_mean(df):
 period_features = df.drop(columns=['Timestamp', 'Tweet'])
 period_features = period_features.groupby(
     ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
-X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID', 'EventType']).values
+X = period_features.drop(
+    columns=['MatchID', 'PeriodID', 'ID', 'EventType']).values
 
 # Labels: 'EventType' (whether an event occurred in that minute)
 y = period_features['EventType'].values.astype(int)
 
-# Evaluating on a test set:
-# We split our data into a training and test set that we can use to train our
-# classifier without fine-tuning into the validation set and without submitting
-# too many times into Kaggle
-if args.model == 'RandomForest':
-    clf = RandomForestClassifier(random_state=42, n_estimators=100)
-elif args.model == 'LogisticRegression':
-    clf = LogisticRegression(random_state=42, max_iter=1000)
-# Split the data into training and test sets
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.3, random_state=42)
 
-clf.fit(X_train, y_train)
 
-# Evaluate the classifier on the test set
-y_pred = clf.predict(X_test)
-logging.info(f"Test set accuracy: {accuracy_score(y_test, y_pred):.4f}")
-logging.info(
-    f"Classification Report:\n{classification_report(y_test, y_pred)}")
+class EventDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.long)
 
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+
+# Hyperparameters
+batch_size = 32
+hidden_dim = 128
+output_dim = 2
+learning_rate = 0.0001
+epochs = 1000
+
+
+# LSTM-based Temporal Classifier
+class LSTMClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(LSTMClassifier, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x, _ = self.lstm(x.unsqueeze(1))  # Batch x Seq_len=1 x Input_dim
+        x = self.fc(x[:, -1, :])  # Last time-step output
+        return x
+
+
+# Initialize Model, Dataset, Optimizer
+train_dataset = EventDataset(X_train, y_train)
+test_dataset = EventDataset(X_test, y_test)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+clf_model = LSTMClassifier(
+    input_dim=X_train.shape[1], hidden_dim=hidden_dim, output_dim=output_dim)
+criterion = nn.CrossEntropyLoss()
+optimizer = Adam(clf_model.parameters(), lr=learning_rate)
+
+# Training Loop
+for epoch in range(epochs):
+    clf_model.train()
+    running_loss = 0
+    for X_batch, y_batch in train_loader:
+        optimizer.zero_grad()
+        outputs = clf_model(X_batch)
+        loss = criterion(outputs, y_batch)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+    print(f"Epoch {epoch+1}/{epochs}, Loss: {running_loss/len(train_loader)}")
+
+# Evaluation
+all_preds = []
+with torch.no_grad():
+    for X_batch, y_batch in test_loader:
+        outputs = clf_model(X_batch)
+        _, preds = torch.max(outputs, 1)
+        all_preds.extend(preds.cpu().numpy())
+accuracy = accuracy_score(y_test, all_preds)
+print(f"Accuracy: {accuracy:.4f}")
 
 # For Kaggle submission
 # This time we train our classifier on the full dataset that is available to us
 clf_dir = Path("models/")
-clf_path = clf_dir / args.model
+# Save the model with a .pth extension
+clf_path = clf_dir / "clf.pth"
+
+# Check if we already have a trained model and whether we should ignore loading it
 if not args.ignore_saved and clf_path.exists():
-    logging.debug("Loading the Random Forest classifier from pickle file...")
-    with open(clf_path, 'rb') as file:
-        clf = pickle.load(file)
+    logging.debug("Loading the model from file...")
+    clf_model = torch.load(clf_path)  # Load the model
 else:
-    logging.info(f"Training {args.model} classifier on full dataset...")
-    if args.model == 'RandomForest':
-        clf = RandomForestClassifier(random_state=42, n_estimators=100)
-    elif args.model == 'LogisticRegression':
-        clf = LogisticRegression(random_state=42, max_iter=1000)
-    clf.fit(X, y)
-    # Save the trained classifier to a pickle file
+    logging.info(f"Training classifier on full dataset...")
+
+    # Initialize the model (using the LSTMClassifier as an example)
+    clf_model = LSTMClassifier(
+        input_dim=X_train.shape[1], hidden_dim=hidden_dim, output_dim=output_dim)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = Adam(clf_model.parameters(), lr=learning_rate)
+
+    # Training loop
+    clf_model.train()
+    for epoch in range(epochs):
+        running_loss = 0
+        for X_batch, y_batch in train_loader:
+            optimizer.zero_grad()
+            outputs = clf_model(X_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        logging.info(
+            f"Epoch {epoch+1}/{epochs}, Loss: {running_loss/len(train_loader)}")
+
+    # Save the trained model using torch.save
     clf_dir.mkdir(exist_ok=True)
-    with open(clf_path, 'wb') as file:
-        pickle.dump(clf, file)
-    logging.debug("Classifier saved to pickle file.")
+    # Save only the state_dict of the model
+    torch.save(clf_model.state_dict(), clf_path)
+    logging.debug("Model saved to file.")
 
 
 # We read each file separately, we preprocess the tweets and then use the
@@ -312,9 +382,16 @@ for fname in tqdm(os.listdir(eval_dir), desc="Processing evaluation files"):
         ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
-    # Predict event types using the classifier
-    preds = clf.predict(X)
-    period_features['EventType'] = preds
+    # Convert the features to a PyTorch tensor
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+
+    # Make predictions using the model
+    with torch.no_grad():  # Disable gradient calculations for inference
+        outputs = clf_model(X_tensor)
+        _, preds = torch.max(outputs, 1)  # Get the predicted class
+
+    # Assign predictions to the DataFrame
+    period_features['EventType'] = preds.numpy()
 
     # Save predictions
     predictions.append(period_features[['ID', 'EventType']])
