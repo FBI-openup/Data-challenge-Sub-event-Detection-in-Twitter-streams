@@ -99,6 +99,7 @@ if args.hyper_search:
             conf = ModelConfig(**params, ignore_saved=args.ignore_saved)
             event_model = EventModel(df_with_embeddings, conf)
             accuracy, precision, recall, f1 = event_model.evaluate()
+            logging.info(f"{accuracy.item()}, {precision.item()}, {recall.item()}, {f1.item()}")
             if event_model.time > 0:
                 res_logger.log(conf, accuracy, event_model.time)
 
