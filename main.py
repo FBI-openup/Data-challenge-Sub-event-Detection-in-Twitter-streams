@@ -90,7 +90,7 @@ if args.hyper_search:
         'epochs': randint(500, 3001)
     }
 
-    sampler = ParameterSampler(param_dist, n_iter=50, random_state=42)
+    sampler = ParameterSampler(param_dist, n_iter=100, random_state=42)
 
     best_accuracy = 0
 
@@ -98,7 +98,7 @@ if args.hyper_search:
         for params in sampler:
             conf = ModelConfig(**params, ignore_saved=args.ignore_saved)
             event_model = EventModel(df_with_embeddings, conf)
-            accuracy = event_model.evaluate()
+            accuracy, precision, recall, f1 = event_model.evaluate()
             if event_model.time > 0:
                 res_logger.log(conf, accuracy, event_model.time)
 
