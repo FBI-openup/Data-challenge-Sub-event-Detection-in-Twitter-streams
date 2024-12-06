@@ -4,5 +4,6 @@ numpy
 pandas
 scikit-learn
 emoji
-sentence_transformers
 transformers
+matplotlib
+seaborn

@@ -1,10 +1,13 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from torch.optim import Adam
 from pathlib import Path
 from tqdm import tqdm
+from time import perf_counter
 
 
 class ModelConfig:
@@ -53,6 +56,8 @@ class EventModel:
             self.X, self.y)
         self.period_features = None
 
+        self.time = 0
+
         torch.backends.cudnn.enabled = False
 
         # Initialize model, loss function, and optimizer
@@ -64,9 +69,10 @@ class EventModel:
         ).to(self.device)
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = Adam(self.model.parameters(),
-                              lr=config.learning_rate)
+                              lr=config.learning_rate, weight_decay=1e-5)
 
-        self.clf_path = self.config.clf_dir / ("test" if self.config.test else "full")
+        self.clf_path = self.config.clf_dir / \
+            ("test" if self.config.test else "full")
         self.clf_path.mkdir(exist_ok=True)
         self.clf_path = self.clf_path / \
             f"clf_{self.config.layers}_{self.config.hidden_dim}_{self.config.epochs}_{self.config.batch_size}_{self.config.learning_rate}.pth"
@@ -134,6 +140,7 @@ class EventModel:
         """
         Trains the model using the training data.
         """
+        time = perf_counter()
         pbar = tqdm(range(self.config.epochs), desc="Running epochs")
         for epoch in pbar:
             self.model.train()
@@ -152,6 +159,7 @@ class EventModel:
 
             pbar.set_postfix_str(
                 f"Loss: {running_loss / len(self.train_loader):.4f}")
+        self.time = perf_counter() - time
 
     def evaluate(self):
         """
@@ -159,21 +167,32 @@ class EventModel:
 
         Returns:
         - accuracy: The accuracy of the model on the test data.
+        - precision: The precision of the model on the test data.
+        - recall: The recall of the model on the test data.
+        - f1: The F1 score of the model on the test data.
         """
         self.model.eval()
-        correct, total = 0, 0
+        y_true = []
+        y_pred = []
 
         with torch.no_grad():
             for X_batch, y_batch in self.test_loader:
                 X_batch, y_batch = X_batch.to(
                     self.device), y_batch.to(self.device)
                 outputs = self.model(X_batch)
-                _, predicted = torch.max(outputs, 1)
-                total += y_batch.size(0)
-                correct += (predicted == y_batch).sum().item()
 
-        accuracy = correct / total
-        return accuracy
+                _, predicted = torch.max(outputs, 1)
+                y_true.extend(y_batch.cpu().numpy())
+                y_pred.extend(predicted.cpu().numpy())
+
+        # Calculate the metrics
+        accuracy = (np.array(y_pred) == np.array(y_true)).mean()
+        # Use 'binary' for binary classification
+        precision = precision_score(y_true, y_pred, average='binary')
+        recall = recall_score(y_true, y_pred, average='binary')
+        f1 = f1_score(y_true, y_pred, average='binary')
+
+        return accuracy, precision, recall, f1
 
     def predict(self, new_data):
         """
@@ -248,7 +267,7 @@ class EventDataset(Dataset):
 
 
 class LSTMClassifier(nn.Module):
-    def __init__(self, input_dim, layers, hidden_dim, output_dim):
+    def __init__(self, input_dim, layers, hidden_dim, output_dim, dropout=0.5):
         """
         Initialize the LSTM-based classifier.
 
@@ -258,11 +277,14 @@ class LSTMClassifier(nn.Module):
         output_dim (int): The number of output classes.
         """
         super(LSTMClassifier, self).__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=layers, batch_first=True)
+        self.lstm = nn.LSTM(input_dim, hidden_dim,
+                            num_layers=layers, batch_first=True)
+        self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
         """Forward pass through the LSTM network."""
         x, _ = self.lstm(x.unsqueeze(1))  # Add sequence length dimension
-        x = self.fc(x[:, -1, :])  # Use the last time-step output
+        x = self.dropout(x[:, -1, :])
+        x = self.fc(x)  # Use the last time-step output
         return x
