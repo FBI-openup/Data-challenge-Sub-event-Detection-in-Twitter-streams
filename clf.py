@@ -96,7 +96,10 @@ class EventModel:
         - y: Label vector.
         
         """
-        
+        df['NumTweet'] = df.groupby(['MatchID', 'PeriodID', 'ID'])['Tweet'].transform('count')
+        numtweet_min = df['NumTweet'].min()
+        numtweet_max = df['NumTweet'].max()
+        df['NumTweet'] = (df['NumTweet'] - numtweet_min) / (numtweet_max - numtweet_min)
         # Drop unnecessary columns and compute mean for grouping
         period_features = df.drop(columns=['Timestamp', 'Tweet']).groupby(
             ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
@@ -206,6 +209,10 @@ class EventModel:
         Returns:
         predictions (array): The predicted labels (event types).
         """
+        new_data['NumTweet'] = new_data.groupby(['MatchID', 'PeriodID', 'ID'])['Tweet'].transform('count')
+        numtweet_min = new_data['NumTweet'].min()
+        numtweet_max = new_data['NumTweet'].max()
+        new_data['NumTweet'] = (new_data['NumTweet'] - numtweet_min) / (numtweet_max - numtweet_min)
         # Preprocess the new data (same as the training data preprocessing)
         # Prepare the new data in the same format as the training data
         new_data_features = self._prepare_eval_data(new_data)
