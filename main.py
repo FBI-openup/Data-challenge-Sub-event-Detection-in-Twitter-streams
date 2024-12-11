@@ -18,6 +18,7 @@ from scipy.stats import uniform, randint
 from sklearn.model_selection import ParameterSampler
 
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Process and train on tweet data")
@@ -48,7 +49,7 @@ else:
     logging.getLogger().setLevel(logging.INFO)
 
 # Data dir
-dir = Path("/Data/comev_data_challenge/")
+dir = Path("/Data/zhangboyuan/")
 if not dir.exists():
     dir = Path("./")
 train_dir = dir / "train_tweets"

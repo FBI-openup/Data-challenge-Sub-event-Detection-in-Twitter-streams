@@ -94,7 +94,9 @@ class EventModel:
         Returns:
         - X: Feature matrix.
         - y: Label vector.
+        
         """
+        
         # Drop unnecessary columns and compute mean for grouping
         period_features = df.drop(columns=['Timestamp', 'Tweet']).groupby(
             ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
