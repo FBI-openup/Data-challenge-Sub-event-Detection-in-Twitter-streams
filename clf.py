@@ -100,9 +100,11 @@ class EventModel:
         numtweet_min = df['NumTweet'].min()
         numtweet_max = df['NumTweet'].max()
         df['NumTweet'] = (df['NumTweet'] - numtweet_min) / (numtweet_max - numtweet_min)
+        
         # Drop unnecessary columns and compute mean for grouping
         period_features = df.drop(columns=['Timestamp', 'Tweet']).groupby(
             ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+        # print(period_features.head())
 
         # Extract features and labels
         X = period_features.drop(

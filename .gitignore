@@ -3,4 +3,5 @@ train_tweets/
 preprocessed/
 models/
 eval_embeddings/
+_pycache_/
 
