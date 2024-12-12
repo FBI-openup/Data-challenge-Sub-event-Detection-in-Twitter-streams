@@ -30,6 +30,7 @@ class TweetProcessor:
 
     def preprocess_text(self, text):
         """Preprocess the text data by cleaning and lemmatizing."""
+        text = text.lower()
         # Replace URLs and mentions with BERTweet-compatible tokens
         text = re.sub(r'http\S+|www\S+|https\S+',
                       'URL', text, flags=re.MULTILINE)
@@ -57,7 +58,7 @@ class TweetProcessor:
         df = pd.read_csv(file_path)
 
         df['hash'] = df['Tweet'].apply(lambda x: hash(x))
-        df = df.drop_duplicates(subset='hash').drop(columns='hash')
+        # df = df.drop_duplicates(subset='hash').drop(columns='hash')
 
         df['Tweet'] = df['Tweet'].apply(self.preprocess_text)
         df.to_pickle(output_path)

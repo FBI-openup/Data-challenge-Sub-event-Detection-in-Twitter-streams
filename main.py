@@ -6,16 +6,17 @@ import logging
 
 # Our own code
 from preprocessing import TweetProcessor
-from embedding import TweetEmbeddingProcessor
-from clf import EventModel, ModelConfig
-from result_log import AccuracyLogger, HyperparameterResultsPlotter
 
 # Argument parsing setup
 import argparse
 
 # Training
-from scipy.stats import uniform, randint
-from sklearn.model_selection import ParameterSampler
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, AutoModelForSequenceClassification, AutoTokenizer
+from sklearn.model_selection import train_test_split
+import torch
+from torch.utils.data import Dataset
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+import numpy as np
 
 
 def parse_args():
@@ -33,6 +34,8 @@ def parse_args():
                         help='Perform an hyper parameter grid search and log results')
     parser.add_argument('--viz', action='store_true',
                         help='Visualize hyper search results')
+    parser.add_argument('--load', default=None, type=str,
+                        help='Give a folder to load the model from')
     return parser.parse_args()
 
 
@@ -66,85 +69,121 @@ train_out_dir.mkdir(exist_ok=True)
 tweet_processor = TweetProcessor(train_dir=train_dir, output_dir=train_out_dir)
 df = tweet_processor.run(args.train_files)
 
-""" --- ENCODING --- """
-encoding_out_dir = dir / "train_embeddings"
-encoding_out_dir.mkdir(exist_ok=True)
-embedding_processor = TweetEmbeddingProcessor(
-    model_name='vinai/bertweet-base',
-    batch_size=128,
-    output_dir=encoding_out_dir
-)
-
-df_with_embeddings = embedding_processor.run(df)
-
 """ --- TRAINING --- """
-log_file = Path("model_accuracy_log.csv")
-res_logger = AccuracyLogger(log_file, ModelConfig)
 
-if args.hyper_search:
-    param_dist = {
-        'batch_size': randint(16, 65),
-        'layers': randint(1, 4),
-        'hidden_dim': randint(64, 513),
-        'learning_rate': uniform(1e-5, 1e-2),
-        'epochs': randint(500, 3001)
+
+# --- Dataset Preparation ---
+class TweetDataset(Dataset):
+    def __init__(self, dataframe, tokenizer, max_length):
+        self.data = dataframe
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        tweet = self.data.iloc[index]["Tweet"]
+        label = self.data.iloc[index]["EventType"]
+        encoding = self.tokenizer(
+            tweet,
+            max_length=self.max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        )
+        return {
+            "input_ids": encoding["input_ids"].squeeze(0),
+            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "labels": torch.tensor(label, dtype=torch.long)
+        }
+
+
+def compute_metrics(p):
+    predictions, labels = p
+    # Convert logits to class predictions
+    preds = np.argmax(predictions, axis=1)
+
+    # Compute precision, recall, f1-score, and accuracy
+    accuracy = accuracy_score(labels, preds)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, preds, average='binary')
+
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1
     }
 
-    sampler = ParameterSampler(param_dist, n_iter=50, random_state=42)
 
-    best_accuracy = 0
+# Train-Test Split
+train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
 
-    try:
-        for params in sampler:
-            conf = ModelConfig(**params, ignore_saved=args.ignore_saved)
-            event_model = EventModel(df_with_embeddings, conf)
-            accuracy = event_model.evaluate()
-            if event_model.time > 0:
-                res_logger.log(conf, accuracy, event_model.time)
+# --- Model Preparation ---
+model_path = Path(args.load) if args.load else None
+if model_path and model_path.exists():
+    model = AutoModelForSequenceClassification.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    trainer = Trainer(
+        model=model,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics
+    )
 
-            if accuracy > best_accuracy:
-                best_accuracy = accuracy
-                best_config = params
-    except KeyboardInterrupt:
-        logging.info("Stopping search.")
-
-    logging.info(f"Best config: {best_config}, Best accuracy: {best_accuracy}")
-
+    train_dataset = TweetDataset(train_df, tokenizer, max_length=128)
+    val_dataset = TweetDataset(val_df, tokenizer, max_length=128)
+    # Evaluate on test set
+    logging.info("Evaluating...")
+    test_results = trainer.evaluate(eval_dataset=val_dataset)
+    print(test_results)
+    logging.info("Done")
 else:
-    # conf = ModelConfig(batch_size=32, layers=1,
-    #                    hidden_dim=128, learning_rate=0.0001,
-    #                    epochs=2000, ignore_saved=args.ignore_saved)
-    conf = ModelConfig(batch_size=64, hidden_dim=128,
-                       output_dim=2, learning_rate=0.001,
-                       epochs=1000, ignore_saved=args.ignore_saved)
-    event_model = EventModel(df_with_embeddings, conf)
-    accuracy, precision, recall, f1 = event_model.evaluate()
-    logging.info(
-        f"Accuracy: {accuracy}, Precision: {precision}, Recall: {recall}, F1: {f1}")
-    if event_model.time > 0:
-        res_logger.log(conf, accuracy, event_model.time)
+    # Tokenizer
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    train_dataset = TweetDataset(train_df, tokenizer, max_length=128)
+    val_dataset = TweetDataset(val_df, tokenizer, max_length=128)
+    model = BertForSequenceClassification.from_pretrained(
+        "bert-base-uncased", num_labels=2)
 
-# Visualize results
-if args.viz:
-    plotter = HyperparameterResultsPlotter(log_file)
-    # plotter.heatmap(index_param='hidden_dim', column_param='batch_size',
-    #                 value_param='accuracy', title='Accuracy Heatmap')
-    plotter.plot_all_features_vs_accuracy(
-        ['epochs', 'learning_rate', 'hidden_dim', 'layers'],
-        hue_param='time')
-    plotter.three_param_plot(x_param='batch_size', y_param='learning_rate',
-                             z_param='hidden_dim', color_param='accuracy', title='3D Visualization')
+
+# --- Training Arguments ---
+training_args = TrainingArguments(
+    output_dir="./results",
+    num_train_epochs=3,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    warmup_steps=200,
+    weight_decay=0.01,
+    logging_dir="./logs",
+    logging_steps=200,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    save_total_limit=5
+)
+
+# Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics
+)
+
+# --- Model Training ---
+trainer.train()
+
+logging.info("Training done.")
+eval_results = trainer.evaluate()
+logging.info(eval_results)
 
 
 # For Kaggle submission
 if not args.kaggle:
     logging.info("Flag --kaggle not used, not generating predictions.")
     exit(0)
-# This time we train our classifier on the full dataset that is available to us
-conf.test = False
-conf.epochs = 1500
-event_model = EventModel(df_with_embeddings, conf)
-
 
 # We read each file separately, we preprocess the tweets and then use the
 # classifier to predict the labels. Finally, we concatenate all predictions
