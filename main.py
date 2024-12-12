@@ -1,5 +1,6 @@
 # Base
 from pathlib import Path
+from getpass import getuser
 
 # logging and loading bars
 import logging
@@ -33,6 +34,8 @@ def parse_args():
                         help='Perform an hyper parameter grid search and log results')
     parser.add_argument('--viz', action='store_true',
                         help='Visualize hyper search results')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Change data directory')
     return parser.parse_args()
 
 
@@ -48,7 +51,7 @@ else:
     logging.getLogger().setLevel(logging.INFO)
 
 # Data dir
-dir = Path("/Data/comev_data_challenge/")
+dir = Path("/Data/") / getuser() if not args.data_dir else Path(args.data_dir)
 if not dir.exists():
     dir = Path("./")
 train_dir = dir / "train_tweets"
@@ -76,6 +79,7 @@ embedding_processor = TweetEmbeddingProcessor(
 )
 
 df_with_embeddings = embedding_processor.run(df)
+print(df_with_embeddings.shape)
 
 """ --- TRAINING --- """
 log_file = Path("model_accuracy_log.csv")
@@ -115,9 +119,9 @@ else:
     # conf = ModelConfig(batch_size=32, layers=1,
     #                    hidden_dim=128, learning_rate=0.0001,
     #                    epochs=2000, ignore_saved=args.ignore_saved)
-    conf = ModelConfig(batch_size=64, hidden_dim=128,
-                       output_dim=2, learning_rate=0.001,
-                       epochs=1000, ignore_saved=args.ignore_saved)
+    conf = ModelConfig(batch_size=40, hidden_dim=122, layers=2,
+                       output_dim=2, learning_rate=0.0015,
+                       epochs=1500, ignore_saved=args.ignore_saved)
     event_model = EventModel(df_with_embeddings, conf)
     accuracy, precision, recall, f1 = event_model.evaluate()
     logging.info(
@@ -143,7 +147,6 @@ if not args.kaggle:
     exit(0)
 # This time we train our classifier on the full dataset that is available to us
 conf.test = False
-conf.epochs = 1500
 event_model = EventModel(df_with_embeddings, conf)
 
 

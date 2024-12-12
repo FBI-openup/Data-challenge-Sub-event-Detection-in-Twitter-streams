@@ -32,9 +32,8 @@ class TweetProcessor:
         """Preprocess the text data by cleaning and lemmatizing."""
         # Replace URLs and mentions with BERTweet-compatible tokens
         text = re.sub(r'http\S+|www\S+|https\S+',
-                      'URL', text, flags=re.MULTILINE)
-        text = re.sub(r'@\w+', 'USER', text)  # Replace mentions with USER
-        text = re.sub(r'#[A-Za-z0-9_]+', '', text)  # Remove hashtags
+                      'HTTPURL', text, flags=re.MULTILINE)
+        text = re.sub(r'@\w+', '@USER', text)  # Replace mentions with USER
         # Remove punctuation and numbers
         text = re.sub(r'[^\w\s]', '', text)
         text = re.sub(r'\d+', '', text)
