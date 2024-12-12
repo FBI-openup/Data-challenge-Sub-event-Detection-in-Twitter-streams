@@ -96,8 +96,10 @@ class EventModel:
         - y: Label vector.
         """
         # Drop unnecessary columns and compute mean for grouping
+        df['NumTweet'] = df.groupby(['MatchID', 'PeriodID', 'ID'])['Tweet'].transform('count')
         period_features = df.drop(columns=['Timestamp', 'Tweet']).groupby(
             ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+
 
         # Extract features and labels
         X = period_features.drop(
@@ -238,6 +240,7 @@ class EventModel:
         """
         # Here, preprocess the new data the same way you did for training data.
         # For instance, dropping columns, handling missing values, etc.
+        #new_data['NumTweet'] = new_data.groupby(['MatchID', 'PeriodID', 'ID'])['Tweet'].transform('count')
         self.period_features = new_data.drop(columns=['Timestamp', 'Tweet'])
         self.period_features = self.period_features.groupby(
             ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
