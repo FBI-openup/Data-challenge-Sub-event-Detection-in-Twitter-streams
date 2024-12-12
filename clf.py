@@ -69,7 +69,7 @@ class EventModel:
         ).to(self.device)
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = Adam(self.model.parameters(),
-                              lr=config.learning_rate, weight_decay=1e-5)
+                              lr=config.learning_rate)
 
         self.clf_path = self.config.clf_dir / \
             ("test" if self.config.test else "full")
@@ -96,7 +96,7 @@ class EventModel:
         - y: Label vector.
         """
         # Drop unnecessary columns and compute mean for grouping
-        df['NumTweet'] = df.groupby(['MatchID', 'PeriodID', 'ID'])['Tweet'].transform('count')
+        #df['NumTweet'] = df.groupby(['MatchID', 'PeriodID', 'ID'])['Tweet'].transform('count')
         period_features = df.drop(columns=['Timestamp', 'Tweet']).groupby(
             ['MatchID', 'PeriodID', 'ID']).mean().reset_index()
 

@@ -71,6 +71,7 @@ df = tweet_processor.run(args.train_files)
 
 """ --- ENCODING --- """
 encoding_out_dir = dir / "train_embeddings"
+print(encoding_out_dir)
 encoding_out_dir.mkdir(exist_ok=True)
 embedding_processor = TweetEmbeddingProcessor(
     model_name='vinai/bertweet-base',
@@ -116,11 +117,8 @@ if args.hyper_search:
     logging.info(f"Best config: {best_config}, Best accuracy: {best_accuracy}")
 
 else:
-    # conf = ModelConfig(batch_size=32, layers=1,
-    #                    hidden_dim=128, learning_rate=0.0001,
-    #                    epochs=2000, ignore_saved=args.ignore_saved)
-    conf = ModelConfig(batch_size=40, hidden_dim=122, layers=2,
-                       output_dim=2, learning_rate=0.0015,
+    conf = ModelConfig(batch_size=64, hidden_dim=128, layers=2,
+                       output_dim=2, learning_rate=0.00015,
                        epochs=1500, ignore_saved=args.ignore_saved)
     event_model = EventModel(df_with_embeddings, conf)
     accuracy, precision, recall, f1 = event_model.evaluate()
