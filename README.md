@@ -5,6 +5,7 @@
 -link [Data-challenge-Sub-event-Detection-in-Twitter-streams](https://www.kaggle.com/competitions/sub-event-detection-in-twitter-streams)  
 
 ## Usage
+files in LSTM branch is the newest version
 
 Please first ensure all the required libraries are installed on your system or run :
 ```bash
