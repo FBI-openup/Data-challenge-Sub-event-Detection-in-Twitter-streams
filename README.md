@@ -1,30 +1,24 @@
-# Data-challenge-Sub-event-Detection-in-Twitter-streams
+# 🐦 Sub-event Detection in Twitter Streams
 
--Work of team {Monad} in Data-challenge-Sub-event-Detection-in-Twitter-streams in kaggle
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
+[![Model](https://img.shields.io/badge/Model-LSTM%20%2F%20Embeddings-orange)]()
+[![Status](https://img.shields.io/badge/Status-Completed-success)]()
 
--link [Data-challenge-Sub-event-Detection-in-Twitter-streams](https://www.kaggle.com/competitions/sub-event-detection-in-twitter-streams)  
+> **Team Monad** | Kaggle Data Challenge Solution
 
-## Usage
-files in LSTM branch is the newest version
+## 📖 Project Overview
+This project focuses on **Sub-event Detection** within high-volume Twitter streams. The goal is to classify tweets into specific sub-events or identify them as non-relevant in a temporal context. 
 
-Please first ensure all the required libraries are installed on your system or run :
-```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-```
+To ensure **scientific reproducibility** and robust benchmarking, this system simulates a real-time streaming environment using large-scale historical datasets (CSV), treating the problem as a sequence modeling task using **LSTMs** and **Custom Embeddings**.
 
-Optional arguments:
-  -h, --help            show this help message and exit
-  --ignore-saved        Ignore saved data and models.
-  --train-files TRAIN_FILES
-                        Number of files to use for training (None for all files)
-  --verbose             Enable verbose logging
-  --kaggle              Will train on full dataset and evaluate the model
-  --hyper-search        Perform an hyper parameter grid search and log results
-  --viz                 Visualize hyper search results
-  --data-dir DATA_DIR   Change data directory, default to /Data/username/
+## 🏗️ Project Architecture
+The codebase is modularized to support experimentation and hyperparameter tuning.
 
-## Data
-
-Our code expects data to be in two folders at  DATA_DIR or at the root of the project :
-- `DATA_DIR/train_tweets/`
-- `DATA_DIR/eval_tweets/`
+```text
+├── main.py              # Entry point: handles CLI args and pipeline orchestration
+├── preprocessing.py     # ETL: Tokenization, cleaning, and handling missing data
+├── embedding.py         # Vectorization: Implementation of learnable embeddings/Word2Vec
+├── clf.py               # Model Definitions: LSTM & Classifier architecture
+├── result_log.py        # Logging: Tracks experiments and metrics
+├── data_challenge...pdf # Full scientific report and presentation
+└── requirements.txt     # Dependencies
