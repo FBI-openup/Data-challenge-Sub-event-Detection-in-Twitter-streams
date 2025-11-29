@@ -33,3 +33,28 @@ The code expects the following directory structure at the root or specified via 
 /Data/
 ├── train_tweets/       # JSON files for training
 └── eval_tweets/        # JSON files for evaluation
+
+Usage
+1. Setup Environment
+Ensure all dependencies are installed in a virtual environment.
+code
+Bash
+python3 -m venv .venv 
+source .venv/bin/activate 
+pip install -r requirements.txt
+2. Training & Evaluation (End-to-End)
+To train the LSTM model on the full dataset and evaluate the accuracy against the evaluation set:
+code
+Bash
+python main.py --kaggle --verbose
+3. Hyperparameter Search
+To perform a grid search for optimal embedding dimensions and learning rates, and visualize the results:
+code
+Bash
+python main.py --hyper-search --viz
+4. Custom Data Directory
+If your dataset is located in a different path:
+code
+Bash
+python main.py --data-dir /path/to/your/json/files/
+Note: The baseline.py script contains the initial Logistic Regression implementation acting as a benchmark, while the current branch contains the advanced deep learning (LSTM) solution.
