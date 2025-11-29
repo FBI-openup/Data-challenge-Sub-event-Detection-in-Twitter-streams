@@ -5,6 +5,9 @@
 [![Status](https://img.shields.io/badge/Status-Completed-success)]()
 
 > **Team Monad** | Kaggle Data Challenge Solution
+> -Work of team {Monad} in Data-challenge-Sub-event-Detection-in-Twitter-streams in kaggle
+
+-link [Data-challenge-Sub-event-Detection-in-Twitter-streams](https://www.kaggle.com/competitions/sub-event-detection-in-twitter-streams)  
 
 ## 📖 Project Overview
 This project focuses on **Sub-event Detection** within high-volume Twitter streams. The goal is to classify tweets into specific sub-events or identify them as non-relevant in a temporal context. 
